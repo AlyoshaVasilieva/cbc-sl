@@ -38,7 +38,7 @@ struct Args {
     /// List available Olympics streams
     #[clap(short = 'l', long = "list", conflicts_with_all(&["url", "replays"]))]
     list: bool,
-    /// List available Olympics replays, may only be recent streams
+    /// List available Olympics replays (at most 24 are shown)
     #[clap(short = 'a', long = "replays", conflicts_with_all(&["url", "list"]))]
     replays: bool,
     /// Streamlink log level
@@ -176,7 +176,7 @@ enum VidState {
 }
 
 impl MpxItem {
-    fn to_human(&self, state: VidState) -> String {
+    fn to_human(&self, state: VidState, full_urls: bool) -> String {
         let air = self.air_date();
         let now = Local::now();
         let text =
@@ -199,7 +199,8 @@ impl MpxItem {
         };
         // bright white: white
         // white: light gray
-        format!("{} - {}{}", self.id, note, self.title)
+        let prefix = if full_urls { "https://www.cbc.ca/player/play/" } else { "" };
+        format!("{}{} - {}{}", prefix, self.id, note, self.title)
     }
 
     fn air_date(&self) -> DateTime<Local> {
@@ -231,13 +232,13 @@ fn main() -> Result<()> {
     let agent = ab.build();
     if args.list {
         for item in get_live_and_upcoming(&agent)?.data.mpx_items {
-            println!("{}", item.to_human(VidState::LiveOrUpcoming));
+            println!("{}", item.to_human(VidState::LiveOrUpcoming, args.full_urls));
         }
         return Ok(());
     }
     if args.replays {
         for item in get_replays(&agent)?.data.mpx_items {
-            println!("{}", item.to_human(VidState::Replay));
+            println!("{}", item.to_human(VidState::Replay, args.full_urls));
         }
         return Ok(());
     }
