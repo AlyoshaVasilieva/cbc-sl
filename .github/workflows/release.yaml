@@ -1,0 +1,163 @@
+# taken from https://github.com/cargo-generate/cargo-generate/blob/master/.github/workflows/release.yml and
+# https://github.com/cargo-generate/cargo-generate/blob/master/.github/workflows/release-binary-assets.yml and
+# modified
+
+## references:
+# cache: https://github.com/actions/cache/blob/main/examples.md#rust---cargo
+# audit: https://github.com/actions-rs/audit-check
+# "needs": https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idneeds
+
+name: Release
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]-alpha.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]-beta.[0-9]+'
+    paths-ignore:
+      - "**/docs/**"
+      - "**.md"
+
+jobs:
+  check:
+    name: check
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [ 'macos-latest', 'ubuntu-latest', 'windows-latest' ]
+    runs-on: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: setup | rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          profile: minimal
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v1
+      - run: cargo check
+
+  lint:
+    name: lint
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [ 'macos-latest', 'ubuntu-latest', 'windows-latest' ]
+        cargo-cmd:
+          - fmt --all -- --check
+          - clippy --all-targets --all-features -- -D warnings
+    runs-on: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: setup | rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          profile: minimal
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v1
+      - run: cargo ${{ matrix['cargo-cmd'] }}
+
+  release:
+    name: post / github release
+    needs: lint
+    runs-on: ubuntu-latest
+    environment: release
+    outputs:
+      version: ${{ steps.tag_name.outputs.current_version }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: setup | rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          profile: minimal
+      - name: Get version from tag
+        id: tag_name
+        run: |
+          echo ::set-output name=current_version::${GITHUB_REF#refs/tags/v}
+        shell: bash
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # This pulls from the "Get Changelog Entry" step above, referencing its ID to get its outputs object.
+          # See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.tag_name.outputs.current_version }}
+
+  rba:
+    name: release binary assets
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+            binName: cbc-sl
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+            binName: cbc-sl
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+            binName: cbc-sl
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            binName: cbc-sl.exe
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            binName: cbc-sl.exe
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+      - uses: Swatinem/rust-cache@v1
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          use-cross: ${{ matrix.cross }}
+          args: --release --target=${{ matrix.target }}
+      - name: Smoke Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          use-cross: ${{ matrix.cross }}
+          args: --release --target=${{ matrix.target }} -- -V
+      - name: Move Binary
+        id: mv
+        run: mv "target/${{ matrix.target }}/release/${{ matrix.binName }}" .
+      - name: Zip Files
+        uses: vimtor/action-zip@v1
+        id: archive
+        with:
+          files: README.md LICENSE ${{ matrix.binName }}
+          dest: cbc-sl-${{ needs.release.outputs.version }}-${{ matrix.target }}.zip
+      - name: Upload Archive
+        uses: ncipollo/release-action@v1.8.8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: cbc-sl-${{ needs.release.outputs.version }}-${{ matrix.target }}.zip
+          artifactContentType: application/zip
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
