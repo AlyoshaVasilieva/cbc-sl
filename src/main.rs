@@ -62,7 +62,7 @@ struct Args {
     url: Option<String>,
 }
 
-fn get_live_and_upcoming(agent: &Agent) -> Result<LiveResponse> {
+fn get_live_and_upcoming(agent: &Agent) -> Result<GqlResponse> {
     /// Hit "Show More" and look at the network monitor to get this
     const LIVE_QUERY: &str = "query clipsFromCategory($categoryName: String, $page: Int, \
     $pageSize: Int, $onNowBeforeDate: Float, $onNowAfterDate: Float) {\n        \
@@ -89,7 +89,7 @@ fn get_live_and_upcoming(agent: &Agent) -> Result<LiveResponse> {
     Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
 }
 
-fn get_replays(agent: &Agent) -> Result<LiveResponse> {
+fn get_replays(agent: &Agent) -> Result<GqlResponse> {
     /// Built from the live query, with sorting removed so it gives proper order (recent first).
     /// CBC's site uses a much different query for grabbing replays but this works and allows
     /// reuse of deserialization.
@@ -136,12 +136,12 @@ pub struct Variables {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct LiveResponse {
-    pub(crate) data: LiveData,
+pub struct GqlResponse {
+    pub(crate) data: GqlData,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct LiveData {
+pub struct GqlData {
     #[serde(rename = "mpxItems")]
     pub(crate) mpx_items: Vec<MpxItem>,
 }
