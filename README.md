@@ -29,7 +29,7 @@ Additionally, with something like [yt-dlp] you can use this to download replays.
 
 ### Notes
 
-* MPC-HC will occasionally fail to detect audio. Close and re-run to try again if this
-  happens to you, whatever your player is.
+* If your player fails to detect audio, look for a configuration option like
+  "Stream Analysis Duration" and increase it.
 * You can't seek, even in replays. Limitation of streamlink.
 * It's 720p30 at a less-than-perfect bitrate.
