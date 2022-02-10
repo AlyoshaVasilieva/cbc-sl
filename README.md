@@ -19,7 +19,13 @@ You can also use URLs, such as `cbc-sl https://www.cbc.ca/player/play/1920742467
 
 Use `-p IP:port` option to specify a proxy. Supports HTTP, SOCKS4A, SOCKS5H proxies.
 
+Additionally, with something like [yt-dlp] you can use this to download replays.
+
+1. Use `cbc-sl --no-run ID` to show the URL and a permitted User-Agent
+2. Download with `yt-dlp --user-agent AGENT URL`
+
 [sl]: https://github.com/streamlink/streamlink
+[yt-dlp]: https://github.com/yt-dlp/yt-dlp
 
 ### Notes
 
