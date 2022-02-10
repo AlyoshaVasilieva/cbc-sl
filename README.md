@@ -10,7 +10,8 @@ or fix it if it breaks once I'm done watching them. (Update: Fixed for Beijing 2
 ### Guide
 
 1. Install [streamlink][sl] and configure it
-2. Install this (`cargo install --git https://github.com/AlyoshaVasilieva/cbc-sl`)
+2. Build from source (`cargo install --git https://github.com/AlyoshaVasilieva/cbc-sl`)
+   or [download a pre-built binary](https://github.com/AlyoshaVasilieva/cbc-sl/releases)
 3. Run `cbc-sl --list` or `cbc-sl --replays` to see what you can watch
 4. Run `cbc-sl ID` to call streamlink
 
