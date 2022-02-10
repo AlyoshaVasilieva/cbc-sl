@@ -32,7 +32,8 @@ struct Args {
     /// Proxy to use (if you aren't in Canada). If no scheme is set, defaults to socks5
     #[clap(short = 'p', long = "proxy")]
     proxy: Option<String>,
-    /// Don't run streamlink, just print the stream URL
+    /// Don't run streamlink, just print the stream URL. Note that CBC.ca requires a matching
+    /// User-Agent or it will reject your request
     #[clap(short = 'n', long = "no-run", conflicts_with_all(&["list", "replays"]))]
     no_run: bool,
     /// List available Olympics streams
@@ -264,7 +265,8 @@ fn main() -> Result<()> {
         get_best_stream(master_playlist, &playlist)?
     };
     if args.no_run {
-        println!("{}", stream);
+        println!("User-Agent: {}", USER_AGENT);
+        println!("URL: {}", stream);
     } else {
         let sl = args.streamlink;
         let stat = if let Some(proxy) = args.proxy.map(|p| proxy_url_streamlink(&p)) {
