@@ -10,7 +10,7 @@ or fix it if it breaks once I'm done watching them. (Update: Fixed for Beijing 2
 
 ### Guide
 
-1. Install [streamlink][sl] and configure it
+1. [Install streamlink][sl] and configure it
 2. Build from source (`cargo install --git https://github.com/AlyoshaVasilieva/cbc-sl`)
    or [download a pre-built binary](https://github.com/AlyoshaVasilieva/cbc-sl/releases)
 3. Run `cbc-sl --list` or `cbc-sl --replays` to see what you can watch
@@ -20,7 +20,7 @@ You can also use URLs, such as `cbc-sl https://www.cbc.ca/player/play/video/9.64
 
 Use `-p scheme://IP:port` to specify a proxy. Supports HTTP, SOCKS4a, SOCKS5H proxies.
 
-[sl]: https://github.com/streamlink/streamlink
+[sl]: https://streamlink.github.io/install.html
 
 ### Streamlink configuration
 
