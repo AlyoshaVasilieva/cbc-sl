@@ -1,5 +1,3 @@
-use std::ptr;
-
 use anyhow::Result;
 use windows::Win32::{
     Foundation::HANDLE,
@@ -11,6 +9,7 @@ use windows::Win32::{
         GetConsoleMode, SetConsoleMode, CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
     },
 };
+use windows_strings::w;
 
 /// owo-colors doesn't handle this. I could just use another dep to do it, but it's not complex
 /// code. See <https://docs.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences#example-of-sgr-terminal-sequences>
@@ -19,20 +18,19 @@ use windows::Win32::{
 pub(crate) fn enable_colors() -> Result<()> {
     let handle = unsafe {
         CreateFileW(
-            "CONOUT$",
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            w!("CONOUT$"),
+            (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
-            ptr::null_mut(),
+            None,
             OPEN_EXISTING,
             FILE_FLAGS_AND_ATTRIBUTES::default(),
             HANDLE::default(),
-        )
-        .ok()?
+        )?
     };
     let mut mode = CONSOLE_MODE::default();
-    unsafe { GetConsoleMode(handle, &mut mode).ok()? };
+    unsafe { GetConsoleMode(handle, &mut mode)? };
     if (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING).0 == 0 {
-        unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING).ok()? };
+        unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)? };
     }
     Ok(())
 }

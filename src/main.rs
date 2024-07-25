@@ -1,29 +1,30 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{anyhow, ensure, Result};
-use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use extend::ext;
-use hls_m3u8::tags::VariantStream;
-use hls_m3u8::MasterPlaylist;
+use hls_m3u8::{tags::VariantStream, MasterPlaylist};
+use lazy_regex::{lazy_regex, regex};
 use once_cell::sync::Lazy;
 use owo_colors::{OwoColorize, Stream::Stdout};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ureq::{Agent, AgentBuilder, Proxy};
 use url::Url;
 
+use crate::api::{InitialState, Stream};
+
+mod api;
 #[cfg(windows)]
 mod wincolors;
 
 // pretend to be a real browser
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-(KHTML, like Gecko) Chrome/98.0.4758.80 Safari/537.36 Edg/98.0.1108.43";
+(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
 static ID_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"https://www\.cbc\.ca/player/play/([[:digit:]]+)"#).unwrap());
+    lazy_regex!(r#"(?:https://www\.cbc\.ca/player/play/video/)?([[:digit:]]+\.[[:digit:]]+)"#);
 
 #[derive(Debug, Parser)]
 #[clap(version)]
@@ -43,13 +44,13 @@ struct Args {
     #[clap(short = 'a', long = "replays", conflicts_with_all(&["url", "list"]))]
     replays: bool,
     /// Streamlink log level
-    #[clap(long = "loglevel", possible_values(["none", "error", "warning", "info", "debug", "trace"]), default_value = "info")]
+    #[clap(long = "loglevel", value_parser(["none", "error", "warning", "info", "debug", "trace"]), default_value = "info")]
     loglevel: String,
-    /// Trust Streamlink to handle the master playlist. May require streamlink version < 2.3.0 or
-    /// > 3.1.1
-    #[clap(short = 'T', long = "trust-streamlink")]
-    trust: bool,
-    /// Stream quality to request. Currently requires --trust-streamlink
+    /// Don't trust streamlink to handle the master playlist. Works around a bug in certain old
+    /// versions of streamlink. This shouldn't do anything on versions >3.1.1.
+    #[clap(short = 'T', long = "distrust-streamlink")]
+    distrust: bool,
+    /// Stream quality to request. Won't work if you're using --distrust-streamlink
     #[clap(short = 'q', long = "quality", default_value = "best")]
     quality: String,
     /// Streamlink bin name or path
@@ -59,168 +60,89 @@ struct Args {
     #[clap(short = 'f', long = "full-urls")]
     full_urls: bool,
     /// CBC.ca URL or ID
-    #[clap(validator(probably_cbc), required_unless_present_any(["list", "replays"]))]
+    #[clap(value_parser(probably_cbc), required_unless_present_any(["list", "replays"]))]
     url: Option<String>,
 }
 
-fn get_live_and_upcoming(agent: &Agent) -> Result<GqlResponse> {
-    /// Hit "Show More" and look at the network monitor to get this
-    const LIVE_QUERY: &str = "query clipsFromCategory($categoryName: String, $page: Int, \
-    $pageSize: Int, $onNowBeforeDate: Float, $onNowAfterDate: Float) {\n        \
-    mpxItems (categoryName: $categoryName, pageSize: $pageSize, page: $page, afterDate: \
-    $onNowAfterDate, beforeDate: $onNowBeforeDate, sortBy: \"pubDate\") {\n            \
-    ...mediaItemBaseCard\n        }\n    } fragment mediaItemBaseCard on MediaItem {\n    \
-    ...mediaItemBase\n    description\n    sport\n    showName\n    captions {\n        \
-    src\n        lang\n    }\n} fragment mediaItemBase on MediaItem {\n    id\n    source\n    \
-    title\n    thumbnail\n    airDate\n    duration\n    contentArea\n    categories {\n        \
-    name\n    }\n    isLive\n    isVideo\n}";
+fn get_live_and_upcoming(agent: &Agent) -> Result<api::GqlResponse> {
+    const LIVE_QUERY: &str =
+        "query contentItemsByItemsQueryFilters($itemsQueryFilters:ItemsQueryFilters\
+    ,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,$lineupOnly:Boolean,$offset:Int)\
+    {allContentItems(itemsQueryFilters:$itemsQueryFilters,page:$page,pageSize:$pageSize,offset:\
+    $offset,minPubDate:$minPubDate,maxPubDate:$maxPubDate,lineupOnly:$lineupOnly,targets:[WEB,ALL])\
+    {nodes{...cardNode}}}fragment cardNode on ContentItem{id url title sectionList sectionLabels \
+    relatedLinks{url title sourceId}deck description flag imageLarge image{_16x9_460:derivative\
+    (preferredWidth:460,aspectRatio:\"16x9\"){w fileurl}_16x9_620:derivative(preferredWidth:620,\
+    aspectRatio:\"16x9\"){w fileurl}_16x9_940:derivative(preferredWidth:940,aspectRatio:\"16x9\")\
+    {w fileurl}square_220:derivative(preferredWidth:220,aspectRatio:\"square\"){w fileurl}}source \
+    sourceId publishedAt updatedAt sponsor{name logo url external label}type showName authors{name \
+    smallImageUrl}commentsEnabled contextualHeadlines{headline contextualLineupSlug}mediaId media\
+    {duration hasCaptions streamType}headlineData{type title mediaId sourceId mediaDuration \
+    publishedAt image}components{mainContent{url sectionList flag sourceId type}mainVisual{...on \
+    ContentItem{publishedAt mediaId sourceId media{duration hasCaptions streamType}title \
+    imageLarge}}primary secondary tertiary}categories{name slug path}}";
 
-    let now = Utc::now();
-    let start = now - chrono::Duration::hours(14);
     let query = json!({
         "query": LIVE_QUERY,
         "variables": {
-            "categoryName": "Sports/Olympics/Winter/Live",
-            // "onNowBeforeDate": end.timestamp(), // give us the full schedule
-            "onNowAfterDate": start.timestamp(),
-            "pageSize": 24, // normally 4
-            "page": 1
+            "lineupOnly": false,
+            "page": 1,
+            "pageSize": 15,
+            "maxPubDate": "now+35d",
+            "minPubDate": "now-14h",
+            "itemsQueryFilters": {
+                "types": [
+                    "video"
+                ],
+                "categorySlugs": [
+                    "summer-olympics-live"
+                ],
+                "sort": "+publishedAt",
+                "mediaStreamType": "Live"
+            }
         }
     });
+
     Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
 }
 
-fn get_replays(agent: &Agent) -> Result<GqlResponse> {
-    /// Built from the live query, with sorting removed so it gives proper order (recent first).
-    /// CBC's site uses a much different query for grabbing replays but this works and allows
-    /// reuse of deserialization.
-    const VOD_QUERY: &str = "query clipsFromCategory($categoryName: String, $page: Int, \
-    $pageSize: Int, $onNowBeforeDate: Float, $onNowAfterDate: Float) {\n        \
-    mpxItems (categoryName: $categoryName, pageSize: $pageSize, page: $page, afterDate: \
-    $onNowAfterDate, beforeDate: $onNowBeforeDate) {\n            \
-    ...mediaItemBaseCard\n        }\n    } fragment mediaItemBaseCard on MediaItem {\n    \
-    ...mediaItemBase\n    description\n    sport\n    showName\n    captions {\n        \
-    src\n        lang\n    }\n} fragment mediaItemBase on MediaItem {\n    id\n    source\n    \
-    title\n    thumbnail\n    airDate\n    duration\n    contentArea\n    categories {\n        \
-    name\n    }\n    isLive\n    isVideo\n}";
+fn get_replays(agent: &Agent) -> Result<api::GqlResponse> {
+    const VOD_QUERY: &str = "query contentItemsByItemsQueryFilters($itemsQueryFilters:\
+    ItemsQueryFilters,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,\
+    $lineupOnly:Boolean,$offset:Int){allContentItems(itemsQueryFilters:$itemsQueryFilters,\
+    page:$page,pageSize:$pageSize,offset:$offset,minPubDate:$minPubDate,maxPubDate:$maxPubDate,\
+    lineupOnly:$lineupOnly,targets:[WEB,ALL]){nodes{...cardNode}}}fragment cardNode on \
+    ContentItem{id url title sectionList sectionLabels relatedLinks{url title sourceId}deck \
+    description flag imageLarge image{_16x9_460:derivative(preferredWidth:460,aspectRatio:\"16x9\")\
+    {w fileurl}_16x9_620:derivative(preferredWidth:620,aspectRatio:\"16x9\"){w fileurl}_16x9_940:\
+    derivative(preferredWidth:940,aspectRatio:\"16x9\"){w fileurl}square_220:derivative\
+    (preferredWidth:220,aspectRatio:\"square\"){w fileurl}}source sourceId publishedAt updatedAt \
+    sponsor{name logo url external label}type showName authors{name smallImageUrl}commentsEnabled \
+    contextualHeadlines{headline contextualLineupSlug}mediaId media{duration hasCaptions \
+    streamType}headlineData{type title mediaId sourceId mediaDuration publishedAt image}components\
+    {mainContent{url sectionList flag sourceId type}mainVisual{...on ContentItem{publishedAt \
+    mediaId sourceId media{duration hasCaptions streamType}title imageLarge}}primary secondary \
+    tertiary}categories{name slug path}}";
 
     let query = json!({
         "query": VOD_QUERY,
         "variables": {
-            "categoryName": "Sports/Olympics/Winter/Replays",
-            // "onNowBeforeDate": end.timestamp(),
-            // "onNowAfterDate": start.timestamp(),
-            "pageSize": 24,
-            "page": 1
+            "lineupOnly": false,
+            "page": 1,
+            "pageSize": 16,
+            "itemsQueryFilters": {
+                "types": [
+                    "video"
+                ],
+                "sort": "-publishedAt",
+                "categorySlugs": [
+                    "summer-olympics-replays"
+                ]
+            }
         }
     });
     Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GqlQuery {
-    pub(crate) query: String,
-    pub(crate) variables: Variables,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Variables {
-    #[serde(rename = "categoryName")]
-    pub(crate) category_name: String,
-    #[serde(rename = "onNowBeforeDate")]
-    pub(crate) on_now_before_date: i64,
-    #[serde(rename = "onNowAfterDate")]
-    pub(crate) on_now_after_date: i64,
-    #[serde(rename = "pageSize")]
-    pub(crate) page_size: i64,
-    pub(crate) page: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GqlResponse {
-    pub(crate) data: GqlData,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GqlData {
-    #[serde(rename = "mpxItems")]
-    pub(crate) mpx_items: Vec<MpxItem>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MpxItem {
-    pub(crate) id: i64,
-    // pub(crate) source: String,
-    pub(crate) title: String,
-    // pub(crate) thumbnail: String,
-    #[serde(rename = "airDate")]
-    pub(crate) air_date: i64,
-    // pub(crate) duration: i64,
-    // #[serde(rename = "contentArea")]
-    // pub(crate) content_area: String,
-    // pub(crate) categories: Vec<Category>,
-    #[serde(rename = "isLive")]
-    pub(crate) is_live: bool,
-    #[serde(rename = "isVideo")]
-    pub(crate) is_video: bool,
-    // pub(crate) description: String,
-    // pub(crate) sport: String, // included in title
-    // #[serde(rename = "showName")]
-    // pub(crate) show_name: String,
-    // pub(crate) captions: Captions, // not available
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum VidState {
-    LiveOrUpcoming,
-    Replay,
-}
-
-impl MpxItem {
-    fn to_human(&self, state: VidState, full_urls: bool) -> String {
-        let air = self.air_date();
-        let now = Local::now();
-        let text =
-            if now.date() == air.date() { air.format("%H:%M") } else { air.format("%b %d %H:%M") };
-        let is_live = Utc::now().timestamp_millis() >= self.air_date;
-        let note = match state {
-            VidState::LiveOrUpcoming => match is_live {
-                true => format!(
-                    "({} @ {}) ",
-                    "STARTED ".if_supports_color(Stdout, |text| text.bright_white().on_black()),
-                    text
-                ),
-                false => format!(
-                    "({} @ {}) ",
-                    "UPCOMING".if_supports_color(Stdout, |text| text.white().on_black()),
-                    text
-                ),
-            },
-            VidState::Replay => format!("({}) ", text),
-        };
-        // bright white: white
-        // white: light gray
-        let prefix = if full_urls { "https://www.cbc.ca/player/play/" } else { "" };
-        format!("{}{} - {}{}", prefix, self.id, note, self.title)
-    }
-
-    fn air_date(&self) -> DateTime<Local> {
-        let air = NaiveDateTime::from_timestamp(self.air_date / 1000, 0);
-        let air: DateTime<Utc> = DateTime::from_utc(air, Utc);
-        air.with_timezone(&Local)
-    }
-}
-
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Captions {
-//     pub(crate) src: Option<serde_json::Value>,
-//     pub(crate) lang: String,
-// }
-
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct Category {
-//     pub(crate) name: String,
-// }
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -232,63 +154,63 @@ fn main() -> Result<()> {
     }
     let agent = ab.build();
     if args.list {
-        for item in get_live_and_upcoming(&agent)?.data.mpx_items {
-            println!("{}", item.to_human(VidState::LiveOrUpcoming, args.full_urls));
+        for item in get_live_and_upcoming(&agent)?.data.all_content_items.nodes {
+            println!("{}", item.to_human(args.full_urls)?);
         }
         return Ok(());
     }
     if args.replays {
-        for item in get_replays(&agent)?.data.mpx_items {
-            println!("{}", item.to_human(VidState::Replay, args.full_urls));
+        for item in get_replays(&agent)?.data.all_content_items.nodes {
+            println!("{}", item.to_human(args.full_urls)?);
         }
         return Ok(());
     }
 
     let id = parse_cbc_id(&args.url.unwrap())?;
-    let target = format!("https://www.cbc.ca/bistro/order?mediaId={}&limit=10&sort=dateAired", id);
-    let bistro: Bistro = agent.get(&target).call()?.into_json()?;
-    let desc = bistro
-        .items
-        .get(0)
-        .ok_or_else(|| anyhow!("missing item"))?
-        .asset_descriptors
-        .iter()
-        .find(|id| id.loader == "PlatformLoader")
-        .ok_or_else(|| anyhow!("couldn't find PlatformLoader - are you Canadian?"))?;
-    let smil = agent.get(&desc.key).call()?.into_string()?;
-    let smil: Smil = quick_xml::de::from_str(&smil)?;
-    let master_playlist = &smil.body.seq.video.first().ok_or_else(|| anyhow!("missing video"))?.src;
-    let stream = if args.trust {
-        master_playlist.to_owned()
+
+    let target = format!("https://www.cbc.ca/player/play/video/{id}");
+    let page = agent.get(&target).call()?.into_string()?;
+    let preload_json_regex = regex!(r#"window\.__INITIAL_STATE__ = (.*);</script>"#);
+    let preload_json = preload_json_regex
+        .captures(&page)
+        .ok_or_else(|| anyhow!("couldn't find initial state!"))?
+        .get(1)
+        .unwrap()
+        .as_str();
+    let initial_state: InitialState = serde_json::from_str(preload_json)?;
+    let surls = initial_state.video.get_stream_urls();
+    let json_url = surls.medianet.ok_or_else(|| anyhow!("no medianet URL found"))?;
+
+    let blocked = format!(
+        "grabbing stream data; an error here probably means {}",
+        "your IP is geo-blocked".if_supports_color(Stdout, |text| text.bright_red().on_black()),
+    );
+
+    let stream_json: Stream = agent.get(&json_url).call()?.into_json().context(blocked)?;
+    let master_url = stream_json.url.as_str();
+
+    let stream = if args.distrust {
+        let playlist = agent.get(master_url).call()?.into_string()?;
+        get_best_stream(master_url, &playlist)?
     } else {
-        let playlist = agent.get(master_playlist).call()?.into_string()?;
-        get_best_stream(master_playlist, &playlist)?
+        master_url.to_owned()
     };
     if args.no_run {
         println!("User-Agent: {}", USER_AGENT);
         println!("URL: {}", stream);
     } else {
         let sl = args.streamlink;
+        let mut cmd = Command::new(sl);
+        cmd.arg("--loglevel")
+            .arg(&args.loglevel)
+            .arg("--http-header")
+            .arg(format!("User-Agent={USER_AGENT}"))
+            .arg("--http-header")
+            .arg(format!("Referer={target}"));
         let stat = if let Some(proxy) = args.proxy.map(|p| proxy_url_streamlink(&p)) {
-            Command::new(sl)
-                .arg("--loglevel")
-                .arg(&args.loglevel)
-                .arg("--http-header")
-                .arg(format!("User-Agent={USER_AGENT}"))
-                .arg("--http-proxy") // also proxies https
-                .arg(&proxy)
-                .arg(stream)
-                .arg(args.quality)
-                .status()?
+            cmd.arg("--http-proxy").arg(&proxy).arg(stream).arg(args.quality).status()?
         } else {
-            Command::new(sl)
-                .arg("--loglevel")
-                .arg(&args.loglevel)
-                .arg("--http-header")
-                .arg(format!("User-Agent={USER_AGENT}"))
-                .arg(stream)
-                .arg(args.quality)
-                .status()?
+            cmd.arg(stream).arg(args.quality).status()?
         };
         if !stat.success() {
             return if stat.code().is_some() {
@@ -333,32 +255,6 @@ impl VariantStream<'_> {
     }
 }
 
-#[ext]
-impl str {
-    fn is_numeric(&self) -> bool {
-        !self.is_empty() && self.chars().all(|c| c.is_ascii_digit())
-    }
-    // good chance these do something wrong, since I wrote them in a minute and never tested them
-    fn substring_to_last(&self, pat: &str) -> &str {
-        if self.is_empty() || pat.is_empty() {
-            return self;
-        }
-        match self.rfind(pat) {
-            None => self,
-            Some(index) => &self[..index + 1],
-        }
-    }
-    fn substring_from(&self, pat: &str) -> &str {
-        if self.is_empty() || pat.is_empty() {
-            return self;
-        }
-        match self.find(pat) {
-            None => self,
-            Some(index) => &self[index..],
-        }
-    }
-}
-
 /// Rewrites proxy specifications:
 /// * SOCKS4 is changed to specify remote DNS
 /// * SOCKS5 strips the `h` if present, since ureq always does remote DNS and can't handle `SOCKS5H`
@@ -384,135 +280,14 @@ fn proxy_url_streamlink(spec: &str) -> String {
 }
 
 /// Returns OK if the input is either numeric (ID) or a full CBC URL.
-fn probably_cbc(input: &str) -> std::result::Result<(), String> {
-    if input.is_numeric() || ID_REGEX.is_match(input) {
-        Ok(())
+fn probably_cbc(input: &str) -> std::result::Result<String, String> {
+    if let Some(cap) = ID_REGEX.captures(input) {
+        Ok(cap.get(1).unwrap().as_str().to_string())
     } else {
         Err("invalid url".into())
     }
 }
 
-fn parse_cbc_id(input: &str) -> Result<u64> {
-    Ok(if input.is_numeric() {
-        input.parse()?
-    } else {
-        ID_REGEX.captures(input).unwrap().get(1).unwrap().as_str().parse()?
-    })
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct Bistro {
-    pub(crate) items: Vec<OrderItem>,
-    // pub(crate) errors: Vec<Option<serde_json::Value>>, // never seen this filled
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct OrderItem {
-    // pub(crate) title: String,
-    // pub(crate) description: String,
-    // #[serde(rename = "showName")]
-    // pub(crate) show_name: String,
-    // pub(crate) categories: Vec<Category>,
-    // pub(crate) thumbnail: String,
-    // #[serde(rename = "hostImage")]
-    // pub(crate) host_image: Option<serde_json::Value>,
-    // pub(crate) chapters: Vec<Chapter>,
-    // pub(crate) duration: i64,
-    // #[serde(rename = "airDate")]
-    // pub(crate) air_date: i64,
-    // #[serde(rename = "addedDate")]
-    // pub(crate) added_date: i64,
-    // #[serde(rename = "contentArea")]
-    // pub(crate) content_area: String,
-    // pub(crate) season: String,
-    // pub(crate) episode: String,
-    // #[serde(rename = "type")]
-    // pub(crate) item_type: String,
-    // pub(crate) region: String,
-    // pub(crate) sport: String,
-    // pub(crate) genre: String,
-    // pub(crate) captions: bool,
-    // pub(crate) token: String,
-    // #[serde(rename = "pageUrl")]
-    // pub(crate) page_url: String,
-    // #[serde(rename = "adUrl")]
-    // pub(crate) ad_url: String,
-    // #[serde(rename = "adOrder")]
-    // pub(crate) ad_order: String,
-    // #[serde(rename = "isAudio")]
-    // pub(crate) is_audio: bool,
-    // #[serde(rename = "isVideo")]
-    // pub(crate) is_video: bool,
-    // #[serde(rename = "isLive")]
-    // pub(crate) is_live: bool,
-    // #[serde(rename = "isOnDemand")]
-    // pub(crate) is_on_demand: bool,
-    // #[serde(rename = "isDRM")]
-    // pub(crate) is_drm: bool,
-    // #[serde(rename = "isBlocked")]
-    // pub(crate) is_blocked: bool,
-    // #[serde(rename = "isDAI")]
-    // pub(crate) is_dai: bool,
-    // #[serde(rename = "embeddedVia")]
-    // pub(crate) embedded_via: bool,
-    // pub(crate) keywords: String,
-    // #[serde(rename = "brandedSponsorName")]
-    // pub(crate) branded_sponsor_name: String,
-    // #[serde(rename = "originalDepartment")]
-    // pub(crate) original_department: String,
-    // #[serde(rename = "mediaPublisherName")]
-    // pub(crate) media_publisher_name: String,
-    // #[serde(rename = "mediaPublisherType")]
-    // pub(crate) media_publisher_type: String,
-    // #[serde(rename = "adCategoryExclusion")]
-    // pub(crate) ad_category_exclusion: String,
-    // #[serde(rename = "excludeFromRecommendations")]
-    // pub(crate) exclude_from_recommendations: bool,
-    // pub(crate) id: String,
-    // #[serde(rename = "idType")]
-    // pub(crate) id_type: String,
-    #[serde(rename = "assetDescriptors")]
-    pub(crate) asset_descriptors: Vec<AssetDescriptor>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AssetDescriptor {
-    pub(crate) loader: String,
-    pub(crate) key: String,
-    // #[serde(rename = "mimeType")]
-    // pub(crate) mime_type: Option<String>,
-}
-
-// #[derive(Debug, Deserialize)]
-// pub(crate) struct Category {
-//     pub(crate) name: String,
-//     pub(crate) scheme: String,
-//     pub(crate) label: String,
-// }
-
-// #[derive(Debug, Deserialize)]
-// pub struct Chapter {
-//     #[serde(rename = "startTime")]
-//     pub(crate) start_time: i64,
-//     pub(crate) name: String,
-// }
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct Smil {
-    body: SmilBody,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SmilBody {
-    seq: SmilSeq,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SmilSeq {
-    video: Vec<SmilVideo>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct SmilVideo {
-    src: String,
+fn parse_cbc_id(input: &str) -> Result<String> {
+    Ok(ID_REGEX.captures(input).unwrap().get(1).unwrap().as_str().to_string())
 }

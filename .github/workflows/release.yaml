@@ -27,15 +27,12 @@ jobs:
         version: [ 'macos-latest', 'ubuntu-latest', 'windows-latest' ]
     runs-on: ${{ matrix.version }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: setup | rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          default: true
-          profile: minimal
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check
 
   lint:
@@ -44,21 +41,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: [ 'macos-latest', 'ubuntu-latest', 'windows-latest' ]
+        version: [ 'macos-latest', 'ubuntu-20.04', 'windows-2022' ]
         cargo-cmd:
           - fmt --all -- --check
           - clippy --all-targets --all-features -- -D warnings
     runs-on: ${{ matrix.version }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: setup | rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          default: true
-          profile: minimal
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo ${{ matrix['cargo-cmd'] }}
 
   release:
@@ -69,13 +63,7 @@ jobs:
     outputs:
       version: ${{ steps.tag_name.outputs.current_version }}
     steps:
-      - uses: actions/checkout@v2
-      - name: setup | rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          default: true
-          profile: minimal
+      - uses: actions/checkout@v4
       - name: Get version from tag
         id: tag_name
         run: |
@@ -96,54 +84,52 @@ jobs:
     name: release binary assets
     needs: release
     runs-on: ${{ matrix.os }}
+    env:
+      CC_aarch64_unknown_linux_musl: "clang"
+      AR_aarch64_unknown_linux_musl: "llvm-ar"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-Clink-self-contained=yes -Clinker=rust-lld"
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
+            os: ubuntu-20.04
             binName: cbc-sl
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
+            os: ubuntu-20.04
             binName: cbc-sl
           - target: x86_64-apple-darwin
             os: macos-latest
-            cross: false
+            binName: cbc-sl
+          - target: aarch64-apple-darwin
+            os: macos-latest
             binName: cbc-sl
           - target: i686-pc-windows-msvc
-            os: windows-latest
-            cross: false
+            os: windows-2022
             binName: cbc-sl.exe
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            cross: false
+            os: windows-2022
             binName: cbc-sl.exe
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+      - name: Install musl tools
+        if: ${{ contains(matrix.os, 'ubuntu') }}
+        run: sudo apt-get install -y musl-dev musl-tools clang llvm
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-      - uses: Swatinem/rust-cache@v1
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          use-cross: ${{ matrix.cross }}
-          args: --release --target=${{ matrix.target }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target=${{ matrix.target }}
       - name: Smoke Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: run
-          use-cross: ${{ matrix.cross }}
-          args: --release --target=${{ matrix.target }} -- -V
+        if: ${{ !contains(matrix.target, 'aarch64') }}
+        run: cargo run --release --target=${{ matrix.target }} -- -V
       - name: Move Binary
         id: mv
         run: mv "target/${{ matrix.target }}/release/${{ matrix.binName }}" .
+      - name: chmod binary #not working? ignored by zip action?
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: chmod +x "${{ matrix.binName }}"
       - name: Zip Files
         uses: vimtor/action-zip@v1
         id: archive
@@ -151,7 +137,7 @@ jobs:
           files: README.md LICENSE ${{ matrix.binName }}
           dest: cbc-sl-${{ needs.release.outputs.version }}-${{ matrix.target }}.zip
       - name: Upload Archive
-        uses: ncipollo/release-action@v1.8.8
+        uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true

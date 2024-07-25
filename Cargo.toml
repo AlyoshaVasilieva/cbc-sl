@@ -1,6 +1,6 @@
 [package]
 name = "cbc-sl"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 authors = ["Malloc Voidstar <1284317+AlyoshaVasilieva@users.noreply.github.com>"]
 license = "Apache-2.0"
@@ -9,18 +9,23 @@ description = "watch the Olympics via CBC.ca with streamlink"
 [dependencies]
 anyhow = "1.0.42"
 ureq = { version = "2.4", features = ["socks-proxy", "json", "brotli"] }
-clap = { version = "3.0.14", features = ["derive"] }
+clap = { version = "4.5.9", features = ["derive"] }
 regex = { version = "1.0", default-features = false, features = ["std", "perf"] }
+lazy-regex = "3.1"
 serde = { version = "1.0.126", features = ["derive"] }
 serde_json = "1.0.64"
 once_cell = "1.8"
-extend = "1.1.1"
-chrono = { version = "0.4.19", default-features = false, features = ["std", "clock", "oldtime"] }
-owo-colors = { version = "3.2", features = ["supports-colors"] }
+extend = "1.2"
+owo-colors = { version = "4.0", features = ["supports-colors"] }
 hls_m3u8 = "0.4.1"
 url = "2.2.2"
-quick-xml = { version = "0.22.0", features = ["serialize"] }
+windows-strings = "0.1"
+jiff = "0.1"
 
 [target.'cfg(windows)'.dependencies.windows]
-version = "0.32.0"
-features = ["alloc", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"]
+version = "0.58"
+features = ["Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"]
+
+[profile.release]
+codegen-units = 1
+lto = true
