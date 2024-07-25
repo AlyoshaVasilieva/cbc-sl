@@ -37,12 +37,16 @@ struct Args {
     /// User-Agent or it will reject your request
     #[clap(short = 'n', long = "no-run", conflicts_with_all(&["list", "replays"]))]
     no_run: bool,
-    /// List available Olympics streams
+    /// List available Olympics streams (at most page-size are shown)
     #[clap(short = 'l', long = "list", conflicts_with_all(&["url", "replays"]))]
     list: bool,
-    /// List available Olympics replays (at most 24 are shown)
+    /// List available Olympics replays (at most page-size are shown)
     #[clap(short = 'a', long = "replays", conflicts_with_all(&["url", "list"]))]
     replays: bool,
+    /// Size of a "page" of streams to load. Since this tool only loads one page, this means
+    /// how many streams/replays to show for --list and --replays
+    #[clap(long = "page-size", default_value = "24")]
+    page_size: u8,
     /// Streamlink log level
     #[clap(long = "loglevel", value_parser(["none", "error", "warning", "info", "debug", "trace"]), default_value = "info")]
     loglevel: String,
@@ -64,7 +68,7 @@ struct Args {
     url: Option<String>,
 }
 
-fn get_live_and_upcoming(agent: &Agent) -> Result<api::GqlResponse> {
+fn get_live_and_upcoming(agent: &Agent, page_size: u8) -> Result<api::GqlResponse> {
     const LIVE_QUERY: &str =
         "query contentItemsByItemsQueryFilters($itemsQueryFilters:ItemsQueryFilters\
     ,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,$lineupOnly:Boolean,$offset:Int)\
@@ -87,7 +91,7 @@ fn get_live_and_upcoming(agent: &Agent) -> Result<api::GqlResponse> {
         "variables": {
             "lineupOnly": false,
             "page": 1,
-            "pageSize": 15,
+            "pageSize": page_size,
             "maxPubDate": "now+35d",
             "minPubDate": "now-14h",
             "itemsQueryFilters": {
@@ -106,7 +110,7 @@ fn get_live_and_upcoming(agent: &Agent) -> Result<api::GqlResponse> {
     Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
 }
 
-fn get_replays(agent: &Agent) -> Result<api::GqlResponse> {
+fn get_replays(agent: &Agent, page_size: u8) -> Result<api::GqlResponse> {
     const VOD_QUERY: &str = "query contentItemsByItemsQueryFilters($itemsQueryFilters:\
     ItemsQueryFilters,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,\
     $lineupOnly:Boolean,$offset:Int){allContentItems(itemsQueryFilters:$itemsQueryFilters,\
@@ -129,7 +133,7 @@ fn get_replays(agent: &Agent) -> Result<api::GqlResponse> {
         "variables": {
             "lineupOnly": false,
             "page": 1,
-            "pageSize": 16,
+            "pageSize": page_size,
             "itemsQueryFilters": {
                 "types": [
                     "video"
@@ -153,14 +157,15 @@ fn main() -> Result<()> {
         ab = ab.proxy(Proxy::new(proxy_url_ureq(proxy))?);
     }
     let agent = ab.build();
+    let psz = args.page_size;
     if args.list {
-        for item in get_live_and_upcoming(&agent)?.data.all_content_items.nodes {
+        for item in get_live_and_upcoming(&agent, psz)?.data.all_content_items.nodes {
             println!("{}", item.to_human(args.full_urls)?);
         }
         return Ok(());
     }
     if args.replays {
-        for item in get_replays(&agent)?.data.all_content_items.nodes {
+        for item in get_replays(&agent, psz)?.data.all_content_items.nodes {
             println!("{}", item.to_human(args.full_urls)?);
         }
         return Ok(());

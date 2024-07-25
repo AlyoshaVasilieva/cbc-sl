@@ -1,6 +1,6 @@
 [package]
 name = "cbc-sl"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["Malloc Voidstar <1284317+AlyoshaVasilieva@users.noreply.github.com>"]
 license = "Apache-2.0"
