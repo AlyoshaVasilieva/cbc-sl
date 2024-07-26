@@ -27,6 +27,18 @@ Use `-p scheme://IP:port` to specify a proxy. Supports HTTP, SOCKS4a, SOCKS5H pr
 Streamlink must be set to handle the stream itself (via e.g. `player-continuous-http`),
 *not* to allow the player to handle it (such as using `player-passthrough=http,hls`).
 
+As an example, here's my config file on Windows:
+
+```
+player=C:\path\to\mpv.exe
+player-continuous-http
+ffmpeg-ffmpeg=C:\Program Files\Streamlink\ffmpeg\ffmpeg.exe
+# download multiple segments at once:
+stream-segment-threads=2
+# reduce latency, increase chance of buffering:
+hls-live-edge=2
+```
+
 ### I get a weird error about invalid JSON or something else
 
 You're probably running into the geo-blocking. CBC tries to block VPNs. If you can't
