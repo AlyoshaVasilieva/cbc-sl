@@ -1,30 +1,24 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use extend::ext;
-use hls_m3u8::{tags::VariantStream, MasterPlaylist};
-use lazy_regex::{lazy_regex, regex};
-use once_cell::sync::Lazy;
-use owo_colors::{OwoColorize, Stream::Stdout};
-use regex::Regex;
-use serde_json::json;
-use ureq::{Agent, AgentBuilder, Proxy};
+use owo_colors::OwoColorize;
+use owo_colors::Stream::Stdout;
+use ureq::{Agent, Proxy};
 use url::Url;
 
-use crate::api::{InitialState, Stream};
+use crate::api::{Item, ItemType, LineupCategory, Olympics, Stream};
 
 mod api;
 #[cfg(windows)]
 mod wincolors;
 
 // pretend to be a real browser
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) \
+Gecko/20100101 Firefox/140.0";
 
-static ID_REGEX: Lazy<Regex> =
-    lazy_regex!(r#"(?:https://www\.cbc\.ca/player/play/video/)?([[:digit:]]+\.[[:digit:]]+)"#);
+// https://gem.cbc.ca/section/olympics
 
 #[derive(Debug, Parser)]
 #[clap(version)]
@@ -37,24 +31,16 @@ struct Args {
     /// User-Agent or it will reject your request
     #[clap(short = 'n', long = "no-run", conflicts_with_all(&["list", "replays"]))]
     no_run: bool,
-    /// List available Olympics streams (at most page-size are shown)
+    /// List available Olympics streams
     #[clap(short = 'l', long = "list", conflicts_with_all(&["url", "replays"]))]
     list: bool,
-    /// List available Olympics replays (at most page-size are shown)
-    #[clap(short = 'a', long = "replays", conflicts_with_all(&["url", "list"]))]
+    /// List available Olympics replays
+    #[clap(short = 'r', long = "replays", conflicts_with_all(&["url", "list"]))]
     replays: bool,
-    /// Size of a "page" of streams to load. Since this tool only loads one page, this means
-    /// how many streams/replays to show for --list and --replays
-    #[clap(long = "page-size", default_value = "24")]
-    page_size: u8,
     /// Streamlink log level
     #[clap(long = "loglevel", value_parser(["none", "error", "warning", "info", "debug", "trace"]), default_value = "info")]
     loglevel: String,
-    /// Don't trust streamlink to handle the master playlist. Works around a bug in certain old
-    /// versions of streamlink. This shouldn't do anything on versions >3.1.1.
-    #[clap(short = 'T', long = "distrust-streamlink")]
-    distrust: bool,
-    /// Stream quality to request. Won't work if you're using --distrust-streamlink
+    /// Stream quality to request
     #[clap(short = 'q', long = "quality", default_value = "best")]
     quality: String,
     /// Streamlink bin name or path
@@ -68,138 +54,89 @@ struct Args {
     url: Option<String>,
 }
 
-fn get_live_and_upcoming(agent: &Agent, page_size: u8) -> Result<api::GqlResponse> {
-    const LIVE_QUERY: &str =
-        "query contentItemsByItemsQueryFilters($itemsQueryFilters:ItemsQueryFilters\
-    ,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,$lineupOnly:Boolean,$offset:Int)\
-    {allContentItems(itemsQueryFilters:$itemsQueryFilters,page:$page,pageSize:$pageSize,offset:\
-    $offset,minPubDate:$minPubDate,maxPubDate:$maxPubDate,lineupOnly:$lineupOnly,targets:[WEB,ALL])\
-    {nodes{...cardNode}}}fragment cardNode on ContentItem{id url title sectionList sectionLabels \
-    relatedLinks{url title sourceId}deck description flag imageLarge image{_16x9_460:derivative\
-    (preferredWidth:460,aspectRatio:\"16x9\"){w fileurl}_16x9_620:derivative(preferredWidth:620,\
-    aspectRatio:\"16x9\"){w fileurl}_16x9_940:derivative(preferredWidth:940,aspectRatio:\"16x9\")\
-    {w fileurl}square_220:derivative(preferredWidth:220,aspectRatio:\"square\"){w fileurl}}source \
-    sourceId publishedAt updatedAt sponsor{name logo url external label}type showName authors{name \
-    smallImageUrl}commentsEnabled contextualHeadlines{headline contextualLineupSlug}mediaId media\
-    {duration hasCaptions streamType}headlineData{type title mediaId sourceId mediaDuration \
-    publishedAt image}components{mainContent{url sectionList flag sourceId type}mainVisual{...on \
-    ContentItem{publishedAt mediaId sourceId media{duration hasCaptions streamType}title \
-    imageLarge}}primary secondary tertiary}categories{name slug path}}";
-
-    let query = json!({
-        "query": LIVE_QUERY,
-        "variables": {
-            "lineupOnly": false,
-            "page": 1,
-            "pageSize": page_size,
-            "maxPubDate": "now+35d",
-            "minPubDate": "now-14h",
-            "itemsQueryFilters": {
-                "types": [
-                    "video"
-                ],
-                "categorySlugs": [
-                    "summer-olympics-live"
-                ],
-                "sort": "+publishedAt",
-                "mediaStreamType": "Live"
-            }
-        }
-    });
-
-    Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
+fn get_live_and_upcoming(agent: &Agent) -> Result<Vec<Item>> {
+    get_items(agent, LineupCategory::LiveUpcoming, "Live & Upcoming")
 }
 
-fn get_replays(agent: &Agent, page_size: u8) -> Result<api::GqlResponse> {
-    const VOD_QUERY: &str = "query contentItemsByItemsQueryFilters($itemsQueryFilters:\
-    ItemsQueryFilters,$page:Int,$pageSize:Int,$minPubDate:String,$maxPubDate:String,\
-    $lineupOnly:Boolean,$offset:Int){allContentItems(itemsQueryFilters:$itemsQueryFilters,\
-    page:$page,pageSize:$pageSize,offset:$offset,minPubDate:$minPubDate,maxPubDate:$maxPubDate,\
-    lineupOnly:$lineupOnly,targets:[WEB,ALL]){nodes{...cardNode}}}fragment cardNode on \
-    ContentItem{id url title sectionList sectionLabels relatedLinks{url title sourceId}deck \
-    description flag imageLarge image{_16x9_460:derivative(preferredWidth:460,aspectRatio:\"16x9\")\
-    {w fileurl}_16x9_620:derivative(preferredWidth:620,aspectRatio:\"16x9\"){w fileurl}_16x9_940:\
-    derivative(preferredWidth:940,aspectRatio:\"16x9\"){w fileurl}square_220:derivative\
-    (preferredWidth:220,aspectRatio:\"square\"){w fileurl}}source sourceId publishedAt updatedAt \
-    sponsor{name logo url external label}type showName authors{name smallImageUrl}commentsEnabled \
-    contextualHeadlines{headline contextualLineupSlug}mediaId media{duration hasCaptions \
-    streamType}headlineData{type title mediaId sourceId mediaDuration publishedAt image}components\
-    {mainContent{url sectionList flag sourceId type}mainVisual{...on ContentItem{publishedAt \
-    mediaId sourceId media{duration hasCaptions streamType}title imageLarge}}primary secondary \
-    tertiary}categories{name slug path}}";
+fn get_replays(agent: &Agent) -> Result<Vec<Item>> {
+    get_items(agent, LineupCategory::Replays, "Replays")
+}
 
-    let query = json!({
-        "query": VOD_QUERY,
-        "variables": {
-            "lineupOnly": false,
-            "page": 1,
-            "pageSize": page_size,
-            "itemsQueryFilters": {
-                "types": [
-                    "video"
-                ],
-                "sort": "-publishedAt",
-                "categorySlugs": [
-                    "summer-olympics-replays"
-                ]
-            }
-        }
-    });
-    Ok(agent.post("https://www.cbc.ca/graphql").send_json(query)?.into_json()?)
+fn get_items(agent: &Agent, category: LineupCategory, cat_name: &str) -> Result<Vec<Item>> {
+    const URL: &str = "https://services.radio-canada.ca/ott/catalog/v2/gem/section/olympics";
+
+    let api: Olympics = agent
+        .get(URL)
+        .query("device", "web")
+        .query("pageSize", "6") // appears to affect what I'm calling "categories", not item lists
+        .query("pageNumber", "1")
+        .call()?
+        .body_mut()
+        .read_json()?;
+
+    // TODO: As the Olympics progresses this might need pagination
+
+    let mut streams = api
+        .lineups
+        .results
+        .into_iter()
+        .find(|lineup| lineup.category == category)
+        .ok_or_else(|| anyhow!("failed to find {cat_name}"))?
+        .items
+        .ok_or_else(|| anyhow!("{cat_name} is missing items"))?;
+
+    // keep only streams; note that Live just means "this aired/is airing/will air"
+    streams.retain(|lu| lu.item_type == ItemType::Live);
+
+    Ok(streams)
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     #[cfg(windows)]
     let _ = wincolors::enable_colors();
-    let mut ab = AgentBuilder::new().user_agent(USER_AGENT);
+    let mut ab = Agent::config_builder().user_agent(USER_AGENT);
     if let Some(proxy) = args.proxy.as_deref() {
-        ab = ab.proxy(Proxy::new(proxy_url_ureq(proxy))?);
+        ab = ab.proxy(Some(Proxy::new(&proxy_url_ureq(proxy))?));
     }
-    let agent = ab.build();
-    let psz = args.page_size;
+    let agent = Agent::from(ab.build());
     if args.list {
-        for item in get_live_and_upcoming(&agent, psz)?.data.all_content_items.nodes {
-            println!("{}", item.to_human(args.full_urls)?);
+        for item in get_live_and_upcoming(&agent)? {
+            println!("{}", item.to_human(true, args.full_urls)?);
         }
         return Ok(());
     }
     if args.replays {
-        for item in get_replays(&agent, psz)?.data.all_content_items.nodes {
-            println!("{}", item.to_human(args.full_urls)?);
+        for item in get_replays(&agent)? {
+            println!("{}", item.to_human(false, args.full_urls)?);
         }
         return Ok(());
     }
 
-    let id = parse_cbc_id(&args.url.unwrap())?;
-
-    let target = format!("https://www.cbc.ca/player/play/video/{id}");
-    let page = agent.get(&target).call()?.into_string()?;
-    let preload_json_regex = regex!(r#"window\.__INITIAL_STATE__ = (.*);</script>"#);
-    let preload_json = preload_json_regex
-        .captures(&page)
-        .ok_or_else(|| anyhow!("couldn't find initial state!"))?
-        .get(1)
-        .unwrap()
-        .as_str();
-    let initial_state: InitialState = serde_json::from_str(preload_json)?;
-    let surls = initial_state.video.get_stream_urls();
-    let json_url = surls.medianet.ok_or_else(|| anyhow!("no medianet URL found"))?;
+    let id = &args.url.unwrap();
 
     let blocked = format!(
-        "grabbing stream data; an error here probably means {}",
+        "grabbing stream info; an error here probably means {}",
         "your IP is geo-blocked".if_supports_color(Stdout, |text| text.bright_red().on_black()),
     );
 
-    let stream_json: Stream = agent.get(&json_url).call()?.into_json().context(blocked)?;
-    let master_url = stream_json.url.as_str();
+    let stream_info: Stream = agent
+        .get("https://services.radio-canada.ca/media/validation/v2/")
+        .query("appCode", "medianetlive")
+        .query("connectionType", "hd")
+        .query("deviceType", "ipad")
+        .query("idMedia", id)
+        .query("multibitrate", "true")
+        .query("output", "json")
+        .query("tech", "hls")
+        .query("manifestVersion", "2")
+        .query("manifestType", "desktop")
+        .call()?
+        .body_mut()
+        .read_json()
+        .context(blocked)?;
+    let stream = stream_info.url.as_str();
 
-    let stream = if args.distrust {
-        let playlist = agent.get(master_url).call()?.into_string()?;
-        get_best_stream(master_url, &playlist)?
-    } else {
-        master_url.to_owned()
-    };
     if args.no_run {
         println!("User-Agent: {}", USER_AGENT);
         println!("URL: {}", stream);
@@ -211,7 +148,7 @@ fn main() -> Result<()> {
             .arg("--http-header")
             .arg(format!("User-Agent={USER_AGENT}"))
             .arg("--http-header")
-            .arg(format!("Referer={target}"));
+            .arg("Referer=https://gem.cbc.ca/");
         let stat = if let Some(proxy) = args.proxy.map(|p| proxy_url_streamlink(&p)) {
             cmd.arg("--http-proxy").arg(&proxy).arg(stream).arg(args.quality).status()?
         } else {
@@ -225,39 +162,8 @@ fn main() -> Result<()> {
             };
         }
     }
+
     Ok(())
-}
-
-/// Given the URL of the master playlist, and its contents, get the highest-bandwidth stream
-/// and build an absolute URL to it.
-///
-/// Workaround for https://github.com/streamlink/streamlink/issues/4329
-fn get_best_stream(url: &str, mp: &str) -> Result<String> {
-    let best = parse_master_playlist(mp)?;
-    let mut url = Url::parse(url)?;
-    url.set_query(None);
-    url.path_segments_mut().unwrap().pop();
-    Ok(format!("{}/{}", url.as_str(), best))
-}
-
-/// Parse a master playlist, return the URI of the stream with the highest bandwidth.
-fn parse_master_playlist(input: &str) -> Result<String> {
-    let mp = MasterPlaylist::try_from(input)?;
-    let mut variant = mp.variant_streams;
-    ensure!(!variant.is_empty(), "no streams found");
-    variant.sort_by_key(|v| v.bandwidth());
-    variant.reverse();
-    let best = variant.first().unwrap();
-    Ok(best.uri())
-}
-
-#[ext]
-impl VariantStream<'_> {
-    fn uri(&self) -> String {
-        match self {
-            Self::ExtXStreamInf { uri, .. } | Self::ExtXIFrame { uri, .. } => uri.to_string(),
-        }
-    }
 }
 
 /// Rewrites proxy specifications:
@@ -286,13 +192,43 @@ fn proxy_url_streamlink(spec: &str) -> String {
 
 /// Returns OK if the input is either numeric (ID) or a full CBC URL.
 fn probably_cbc(input: &str) -> std::result::Result<String, String> {
-    if let Some(cap) = ID_REGEX.captures(input) {
-        Ok(cap.get(1).unwrap().as_str().to_string())
+    let numeric = !input.is_empty() && input.chars().all(|c| c.is_ascii_digit());
+
+    if numeric {
+        Ok(input.to_string())
     } else {
-        Err("invalid url".into())
+        match parse_cbc_url_to_id(input) {
+            Ok(id) => Ok(id),
+            _ => Err("invalid url".into()),
+        }
     }
 }
 
-fn parse_cbc_id(input: &str) -> Result<String> {
-    Ok(ID_REGEX.captures(input).unwrap().get(1).unwrap().as_str().to_string())
+fn parse_cbc_url_to_id(input: &str) -> Result<String> {
+    let url = Url::parse(input)?;
+    let last = url
+        .path_segments()
+        .ok_or_else(|| anyhow!("missing path"))?
+        .next_back()
+        .ok_or_else(|| anyhow!("URL missing path"))?;
+    let ridx = last.rfind(['-', '/']).ok_or_else(|| anyhow!("URL segment doesn't have ID"))?;
+    Ok(last[ridx + 1..].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{parse_cbc_url_to_id, probably_cbc};
+
+    #[test]
+    fn test_parse_cbc_url() {
+        let input = "https://gem.cbc.ca/curling-norway-vs-canada-mixed-doubles-round-robin-30045";
+        assert_eq!(parse_cbc_url_to_id(input).unwrap(), "30045");
+    }
+
+    #[test]
+    fn test_probably_cbc() {
+        let input = "https://gem.cbc.ca/curling-norway-vs-canada-mixed-doubles-round-robin-30045";
+        assert_eq!(probably_cbc(input).unwrap(), "30045");
+        assert_eq!(probably_cbc("30045").unwrap(), "30045");
+    }
 }

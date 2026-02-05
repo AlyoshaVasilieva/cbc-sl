@@ -6,7 +6,7 @@ use windows::Win32::{
         FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     },
     System::Console::{
-        GetConsoleMode, SetConsoleMode, CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, SetConsoleMode,
     },
 };
 use windows_strings::w;

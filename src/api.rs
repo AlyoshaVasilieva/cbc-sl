@@ -1,74 +1,132 @@
-use anyhow::Result;
-use jiff::{tz::TimeZone, Span, Timestamp, Zoned};
+use anyhow::{Result, anyhow};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use owo_colors::{OwoColorize, Stream::Stdout};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct GqlResponse {
-    pub(crate) data: Data,
-    // pub(crate) extensions: Extensions,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Data {
-    pub(crate) all_content_items: AllContentItems,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct AllContentItems {
-    pub(crate) nodes: Vec<Node>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Node {
+pub struct Olympics {
     pub(crate) id: i64,
-    pub(crate) url: String,
-    pub(crate) title: String,
-    // pub(crate) section_list: Vec<Option<serde_json::Value>>,
-    // pub(crate) section_labels: Vec<Option<serde_json::Value>>,
-    // pub(crate) related_links: Vec<Option<serde_json::Value>>,
-    // pub(crate) deck: Option<serde_json::Value>,
-    // pub(crate) description: String,
-    pub(crate) flag: Flag,
-    // pub(crate) image_large: String,
-    // pub(crate) image: HashMap<String, Image>,
-    // pub(crate) source: String,
-    // pub(crate) source_id: String,
-    pub(crate) published_at: String,
-    pub(crate) updated_at: String,
-    // pub(crate) sponsor: Option<serde_json::Value>,
-    #[serde(rename = "type")]
-    // pub(crate) node_type: Type,
-    pub(crate) node_type: String,
-    // pub(crate) show_name: Option<String>,
-    // pub(crate) authors: Vec<Option<serde_json::Value>>,
-    // pub(crate) comments_enabled: bool,
-    // pub(crate) contextual_headlines: Vec<Option<serde_json::Value>>,
-    // pub(crate) media_id: Option<String>,
-    pub(crate) media: Media,
-    // pub(crate) headline_data: Option<serde_json::Value>,
-    // pub(crate) components: Option<serde_json::Value>,
-    // pub(crate) categories: Vec<Category>,
+    pub(crate) name: String,
+    pub(crate) lineups: Lineups,
 }
 
-impl Node {
-    pub(crate) fn proper_id(&self) -> &str {
-        self.url.split('/').last().unwrap()
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub struct AppleMediaServiceSubscriptionV2 {
+//     pub(crate) expires: i64,
+//     #[serde(rename = "type")]
+//     pub(crate) apple_media_service_subscription_v2_type: TypeClass,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// #[serde(rename_all = "camelCase")]
+// pub struct TypeClass {
+//     pub(crate) availability_type: String,
+//     pub(crate) tiers: String,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub struct Background {
+//     pub(crate) url: String,
+//     pub(crate) size: Size,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub enum Size {
+//     Bigger,
+//     Normal,
+// }
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lineups {
+    pub(crate) total_pages: i64,
+    pub(crate) total_records: i64,
+    pub(crate) page_number: i64,
+    pub(crate) page_size: i64,
+    pub(crate) results: Vec<ResultA>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultA {
+    #[serde(rename = "title")]
+    pub(crate) category: LineupCategory,
+    pub(crate) key: String,
+    pub(crate) items: Option<Vec<Item>>,
+    // pub(crate) card_image_type: String,
+    // pub(crate) layout_type: String,
+    // pub(crate) lineup_type: String,
+    // pub(crate) not_signed_in_message: Option<String>,
+    // pub(crate) images: Option<ResultImages>,
+}
+
+// TODO: See if there's a better API that's less bad
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) enum LineupCategory {
+    #[serde(rename = "Featured Olympic Content Milan")]
+    Featured,
+    #[serde(rename = "Live & Upcoming")]
+    LiveUpcoming,
+    #[serde(rename = "My Olympics")]
+    MyOlympics,
+    #[serde(rename = "Browse by Sport")]
+    BySport,
+    #[serde(rename = "Highlights")]
+    Highlights,
+    #[serde(rename = "Replays")]
+    Replays,
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Item {
+    pub(crate) title: String,
+    pub(crate) key: String,
+    pub(crate) description: Option<String>,
+    pub(crate) tier: Option<String>,
+    pub(crate) url: String,
+    #[serde(rename = "type")]
+    pub(crate) item_type: ItemType,
+    // pub(crate) feed_type: Option<FeedType>,
+    // pub(crate) granted_right: GrantedRight,
+    // pub(crate) closed_caption_available: bool,
+    // pub(crate) video_description_available: bool,
+    // pub(crate) is_playback_status_supported: Option<bool>,
+    // pub(crate) is_vod_enabled: Option<bool>,
+    pub(crate) air_date: Option<Timestamp>,
+    // pub(crate) is_legacy_live_event: Option<bool>,
+    // pub(crate) info_title: Option<String>,
+    // pub(crate) badge: Option<Badge>,
+    // pub(crate) id_media: Option<i64>,
+    pub(crate) formatted_id_media: Option<String>,
+}
+
+impl Item {
+    pub(crate) fn get_id(&self) -> String {
+        self.formatted_id_media.clone().unwrap_or_else(|| {
+            let ridx = self.url.rfind(['-', '/']).expect("doubly missing ID");
+            self.url[ridx + 1..].to_string()
+        })
     }
 
-    pub(crate) fn to_human(&self, full_urls: bool) -> Result<String> {
+    /// `lu` = "is this item live/upcoming"
+    /// can't autodetect if it's live or a replay here
+    pub(crate) fn to_human(&self, lu: bool, full_urls: bool) -> Result<String> {
         let now = Zoned::now();
-        let date = self.date()?;
-        let same_day = now.date() == date.date();
+        let air_date = self.zoned(TimeZone::system()).ok_or_else(|| anyhow!("missing air date"))?;
+        // TODO: Show ??:?? or something instead
+        let same_day = now.date() == air_date.date();
         let fmt = if same_day { "%H:%M" } else { "%b %d %H:%M" };
-        let date_time = self.date()?.strftime(fmt);
+        let is_live = lu && air_date < now;
+        // best guess, it's no longer in the API AFAICT
 
-        // live or upcoming
-        let lu = matches!(self.flag, Flag::Live);
+        let date_time = air_date.strftime(fmt);
+
         let note = if lu {
-            match self.is_live()? {
+            match is_live {
                 true => format!(
                     "({} @ {}) ",
                     "STARTED ".if_supports_color(Stdout, |text| text.bright_white().on_black()),
@@ -83,217 +141,60 @@ impl Node {
         } else {
             format!("({}) ", date_time)
         };
-        let prefix = if full_urls { "https://www.cbc.ca/player/play/video/" } else { "" };
-        Ok(format!("{prefix}{} - {note}{}", self.proper_id(), self.title))
+        let prefix = if full_urls { "https://gem.cbc.ca/" } else { "" };
+        Ok(format!("{prefix}{} - {note}{}", self.get_id(), self.title))
     }
 
-    pub(crate) fn timestamp(&self) -> Result<Timestamp> {
-        Ok(Timestamp::from_millisecond(self.published_at.parse()?)?)
-    }
-
-    pub(crate) fn date(&self) -> Result<Zoned> {
-        Ok(Zoned::new(self.timestamp()?, TimeZone::system()))
-    }
-
-    pub(crate) fn is_live(&self) -> Result<bool> {
-        let start = self.timestamp()?;
-        let duration = self.media.duration.round() as i64;
-        let duration = Span::new().seconds(duration);
-        let end = start.checked_add(duration)?;
-        let now = Timestamp::now();
-        Ok(start <= now && now <= end)
+    pub(crate) fn zoned(&self, tz: TimeZone) -> Option<Zoned> {
+        self.air_date.map(|ts| ts.to_zoned(tz))
     }
 }
 
 // #[derive(Debug, Clone, PartialEq, Deserialize)]
-// pub struct Category {
-//     pub(crate) name: String,
-//     pub(crate) slug: String,
-//     pub(crate) path: String,
+// pub struct Badge {
+//     pub(crate) message: String,
+//     #[serde(rename = "type")]
+//     pub(crate) badge_type: String,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub enum FeedType {
+//     #[serde(rename = "LiveEvent")]
+//     LiveEvent,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub enum GrantedRight {
+//     None,
 // }
 
 #[derive(Copy, Debug, Clone, PartialEq, Deserialize)]
-pub enum Flag {
+pub enum ItemType {
+    Collection,
     Live,
-    Video,
+    Media,
+    Section,
+    Show,
 }
 
 // #[derive(Debug, Clone, PartialEq, Deserialize)]
-// pub struct Image {
-//     pub(crate) w: i64,
-//     pub(crate) fileurl: String,
+// pub enum Tier {
+//     Member,
+//     Standard,
+//     Premium,
 // }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Media {
-    pub(crate) duration: f64,
-    pub(crate) has_captions: bool,
-    pub(crate) stream_type: StreamType,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub enum StreamType {
-    Live,
-    #[serde(rename = "On-Demand")]
-    OnDemand,
-}
-
-// #[derive(Debug, Clone, PartialEq, Deserialize)]
-// #[serde(rename_all = "snake_case")]
-// pub enum Type {
-//     Video,
-// }
-
-// #[derive(Debug, Clone, PartialEq, Deserialize)]
-// pub enum ShowName {
-//     #[serde(rename = "CBC Sports")]
-//     CbcSports,
-// }
-
-// #[derive(Debug, Clone, PartialEq, Deserialize)]
-// pub struct Extensions {
-//     pub(crate) warnings: Vec<String>,
-// }
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InitialState {
-    // #[serde(rename = "a11y")]
-    // pub(crate) a11_y: A11Y,
-    // pub(crate) app: App,
-    // pub(crate) author: Author,
-    // pub(crate) content: InitialStateContent,
-    // pub(crate) cookie_jar: CookieJar,
-    // pub(crate) detail: Detail,
-    // pub(crate) featureflags: Featureflags,
-    // pub(crate) feedback: Feedback,
-    // pub(crate) fixed: Fixed,
-    // pub(crate) flp: Flp,
-    // pub(crate) gdpr: Gdpr,
-    // pub(crate) live_radio: Option<serde_json::Value>,
-    // pub(crate) loader: Loader,
-    // pub(crate) navigation: Navigation,
-    // pub(crate) newsletters: Newsletters,
-    // pub(crate) page: Page,
-    // pub(crate) persistent_player: PersistentPlayer,
-    // pub(crate) personalization: Personalization,
-    // pub(crate) plus: Plus,
-    // pub(crate) preferences: Preferences,
-    // pub(crate) regions: Regions,
-    // pub(crate) right_rail: RightRail,
-    // pub(crate) schedule: Schedule,
-    // pub(crate) search: Schedule,
-    // pub(crate) sectional_content: Schedule,
-    // pub(crate) ssr: Ssr,
-    // pub(crate) subject_content: SubjectContent,
-    // pub(crate) tracking: InitialStateTracking,
-    // pub(crate) trending: Trending,
-    pub(crate) video: Video,
-    // pub(crate) video_detail: VideoDetail,
-    // pub(crate) weather: Weather,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Video {
-    pub(crate) current_clip: CurrentClip,
-    // pub(crate) recommendations: CuratedPlaylist,
-    // pub(crate) trending_clips: CuratedPlaylist,
-    // pub(crate) curated_playlist: CuratedPlaylist,
-    // pub(crate) more_from_base_section: CuratedPlaylist,
-}
-
-impl Video {
-    pub(crate) fn get_stream_urls(&self) -> StreamURLs {
-        let mut urls = StreamURLs { dai: None, medianet: None };
-        for surl in &self.current_clip.media.assets {
-            if surl.asset_type == "platform-dai" {
-                // TODO https://pubads.g.doubleclick.net
-                //  it requires a bit more work but I don't know if medianet is always present
-            } else if surl.asset_type == "medianet" {
-                urls.medianet = Some(surl.key.to_string());
-            }
-        }
-        urls
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StreamURLs {
-    pub(crate) dai: Option<String>,
-    pub(crate) medianet: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CurrentClip {
-    pub(crate) source_id: String,
-    // pub(crate) media_id: Option<serde_json::Value>,
-    pub(crate) source: String,
-    pub(crate) title: String,
-    // pub(crate) image: Image,
-    pub(crate) published_at: String,
-    // #[serde(rename = "type")]
-    // pub(crate) current_clip_type: StreamType,
-    // pub(crate) show_data: Option<serde_json::Value>,
-    // pub(crate) show_name: Option<serde_json::Value>,
-    // pub(crate) tags: Vec<Tag>,
-    // pub(crate) concepts: Vec<Option<serde_json::Value>>,
-    pub(crate) media: CurrentClipMedia,
-    pub(crate) updated_at: String,
-    pub(crate) description: String,
-    // pub(crate) categories: Vec<Category2>,
-    // pub(crate) section: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CurrentClipMedia {
-    pub(crate) id: i64,
-    // pub(crate) call_sign: Option<serde_json::Value>,
-    pub(crate) assets: Vec<Asset>,
-    // pub(crate) ad_order: String,
-    // pub(crate) ad_category_exclusion: Option<serde_json::Value>,
-    // pub(crate) stream_type: StreamType,
-    // pub(crate) content_area: String,
-    // pub(crate) content_tier_id: i64,
-    pub(crate) duration: i64,
-    // pub(crate) genre: Option<serde_json::Value>,
-    // pub(crate) clip_type: String,
-    // pub(crate) branded_sponsor_name: String,
-    // pub(crate) season: Option<serde_json::Value>,
-    // pub(crate) episode: Option<serde_json::Value>,
-    // pub(crate) region: String,
-    // pub(crate) sports: Spo,
-    // pub(crate) has_captions: bool,
-    // pub(crate) aspect_ratio: String,
-    // pub(crate) text_tracks: Vec<Option<serde_json::Value>>,
-    // pub(crate) chapters: Option<serde_json::Value>,
-    // pub(crate) exclude_from_recommendations: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Asset {
-    pub(crate) key: String,
-    #[serde(rename = "type")]
-    pub(crate) asset_type: String,
-    // pub(crate) options: Option<serde_json::Value>,
-}
-
-// #[derive(Debug, Clone, PartialEq, Deserialize)]
-// pub struct Category2 {
-//     pub(crate) name: String,
-//     pub(crate) slug: String,
+// pub(crate) enum LineupType {
+//     Featured,
 // }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
     pub(crate) url: String,
-    // pub(crate) message: Option<serde_json::Value>,
+    pub(crate) message: Option<serde_json::Value>,
     pub(crate) error_code: i64,
-    pub(crate) params: Vec<Param>,
+    // pub(crate) params: Vec<StreamParam>,
     // pub(crate) bitrates: Vec<Bitrate>,
 }
 
@@ -307,15 +208,15 @@ pub struct Stream {
 //     pub(crate) max: i64,
 // }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Param {
-    pub(crate) name: String,
-    pub(crate) value: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(untagged)]
-pub enum Value {
-    Integer(i64),
-    String(String),
-}
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// pub struct StreamParam {
+//     pub(crate) name: String,
+//     pub(crate) value: ParamValue,
+// }
+//
+// #[derive(Debug, Clone, PartialEq, Deserialize)]
+// #[serde(untagged)]
+// pub enum ParamValue {
+//     Integer(i64),
+//     String(String),
+// }
