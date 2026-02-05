@@ -24,7 +24,7 @@ pub(crate) fn enable_colors() -> Result<()> {
             None,
             OPEN_EXISTING,
             FILE_FLAGS_AND_ATTRIBUTES::default(),
-            HANDLE::default(),
+            Some(HANDLE::default()),
         )?
     };
     let mut mode = CONSOLE_MODE::default();

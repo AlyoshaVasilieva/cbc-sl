@@ -19,11 +19,11 @@ extend = "1.2"
 owo-colors = { version = "4.0", features = ["supports-colors"] }
 hls_m3u8 = "0.4.1"
 url = "2.2.2"
-windows-strings = "0.1"
-jiff = "0.1"
+windows-strings = "0.5.1"
+jiff = "0.2"
 
 [target.'cfg(windows)'.dependencies.windows]
-version = "0.58"
+version = "0.62.2"
 features = ["Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"]
 
 [profile.release]
